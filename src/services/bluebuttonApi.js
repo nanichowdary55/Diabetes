@@ -1,3 +1,5 @@
+import { patients as dummyPatients } from '../data/mockData';
+
 const BASE_URL = import.meta.env.VITE_BB_BASE_URL || 'https://sandbox.bluebutton.cms.gov';
 const CLIENT_ID = import.meta.env.VITE_CLIENT_ID;
 const CLIENT_SECRET = import.meta.env.VITE_CLIENT_SECRET;
@@ -37,6 +39,25 @@ function parsePatientResource(resource) {
     target,
     resource,
   };
+}
+
+const FALLBACK_PATIENTS = dummyPatients.map(patient => ({
+  id: patient.id,
+  name: patient.name,
+  gender: patient.gender || 'unknown',
+  age: patient.age,
+  birthDate: null,
+  identifier: patient.id,
+  status: patient.status || 'Normal',
+  lastReading: patient.lastReading ?? 100,
+  device: patient.device || 'FHIR Patient',
+  target: patient.target || '70-180',
+  type: patient.type,
+  resource: null,
+}));
+
+function getFallbackPatientById(id) {
+  return FALLBACK_PATIENTS.find(patient => patient.id === id) || FALLBACK_PATIENTS[0] || null;
 }
 
 function parseBundle(bundle) {
@@ -101,10 +122,10 @@ async function requestNewToken() {
     body: body.toString(),
   });
 
-//   if (!response.ok) {
-//     const text = await response.text();
-//     throw new Error(`Token request failed ${response.status} ${response.statusText}: ${text}`);
-//   }
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`Token request failed ${response.status} ${response.statusText}: ${text}`);
+  }
 
   const payload = await response.json();
   return saveToken(payload);
@@ -134,31 +155,84 @@ export async function apiFetch(path, options = {}) {
 }
 
 export async function fetchOpenIdConfig(version = 'v3') {
-  return fetchJson(`${BASE_URL}/${version}/connect/.well-known/openid-configuration`, { headers: { Accept: 'application/json' } });
+  try {
+    return await fetchJson(`${BASE_URL}/${version}/connect/.well-known/openid-configuration`, { headers: { Accept: 'application/json' } });
+  } catch (error) {
+    console.warn('fetchOpenIdConfig failed, returning dummy configuration.', error);
+    return {
+      issuer: BASE_URL,
+      authorization_endpoint: `${BASE_URL}/${version}/connect/authorize`,
+      token_endpoint: `${BASE_URL}/${version}/o/token/`,
+      userinfo_endpoint: `${BASE_URL}/${version}/connect/userinfo`,
+      jwks_uri: `${BASE_URL}/${version}/o/jwks/`,
+    };
+  }
 }
 
 export async function fetchFHIRMetadata(version = 'v3') {
-  return apiFetch(`/${version}/fhir/metadata`, { headers: { Accept: 'application/fhir+json' } });
+  try {
+    return await apiFetch(`/${version}/fhir/metadata`, { headers: { Accept: 'application/fhir+json' } });
+  } catch (error) {
+    console.warn('fetchFHIRMetadata failed, returning dummy metadata.', error);
+    return {
+      resourceType: 'CapabilityStatement',
+      status: 'active',
+      date: new Date().toISOString(),
+      kind: 'instance',
+      software: { name: 'Mock FHIR Server', version: '1.0.0' },
+      fhirVersion: '4.0.1',
+    };
+  }
 }
 
 export async function fetchPatients({ version = 'v3', count = 20 } = {}) {
-  const bundle = await apiFetch(`/${version}/fhir/Patient?_count=${count}`, { headers: { Accept: 'application/fhir+json' } });
-  return parseBundle(bundle);
+  try {
+    const bundle = await apiFetch(`/${version}/fhir/Patient?_count=${count}`, { headers: { Accept: 'application/fhir+json' } });
+    const parsed = parseBundle(bundle);
+    return Array.isArray(parsed) && parsed.length ? parsed : FALLBACK_PATIENTS.slice(0, count);
+  } catch (error) {
+    console.warn('fetchPatients failed, returning dummy patient list.', error);
+    return FALLBACK_PATIENTS.slice(0, count);
+  }
 }
 
 export async function fetchPatientById(id, { version = 'v3' } = {}) {
-  const resource = await apiFetch(`/${version}/fhir/Patient/${encodeURIComponent(id)}`, { headers: { Accept: 'application/fhir+json' } });
-  return parsePatientResource(resource);
+  try {
+    const resource = await apiFetch(`/${version}/fhir/Patient/${encodeURIComponent(id)}`, { headers: { Accept: 'application/fhir+json' } });
+    return parsePatientResource(resource);
+  } catch (error) {
+    console.warn(`fetchPatientById failed for ${id}, returning dummy patient.`, error);
+    return getFallbackPatientById(id);
+  }
 }
 
 export async function fetchUserInfo(version = 'v3') {
-  return apiFetch(`/${version}/connect/userinfo`, { headers: { Accept: 'application/json' } });
+  try {
+    return await apiFetch(`/${version}/connect/userinfo`, { headers: { Accept: 'application/json' } });
+  } catch (error) {
+    console.warn('fetchUserInfo failed, returning dummy user info.', error);
+    return {
+      sub: 'demo-user',
+      name: 'Demo User',
+      email: 'demo@diabatic.app',
+    };
+  }
 }
 
 export async function fetchCoveragesForPatient(patientId, { version = 'v3' } = {}) {
-  return apiFetch(`/${version}/fhir/Coverage?beneficiary=Patient/${encodeURIComponent(patientId)}`, { headers: { Accept: 'application/fhir+json' } });
+  try {
+    return await apiFetch(`/${version}/fhir/Coverage?beneficiary=Patient/${encodeURIComponent(patientId)}`, { headers: { Accept: 'application/fhir+json' } });
+  } catch (error) {
+    console.warn(`fetchCoveragesForPatient failed for ${patientId}, returning dummy coverage bundle.`, error);
+    return { resourceType: 'Bundle', entry: [] };
+  }
 }
 
 export async function fetchEOBForPatient(patientId, { version = 'v3' } = {}) {
-  return apiFetch(`/${version}/fhir/ExplanationOfBenefit?patient=Patient/${encodeURIComponent(patientId)}`, { headers: { Accept: 'application/fhir+json' } });
+  try {
+    return await apiFetch(`/${version}/fhir/ExplanationOfBenefit?patient=Patient/${encodeURIComponent(patientId)}`, { headers: { Accept: 'application/fhir+json' } });
+  } catch (error) {
+    console.warn(`fetchEOBForPatient failed for ${patientId}, returning dummy EOB bundle.`, error);
+    return { resourceType: 'Bundle', entry: [] };
+  }
 }
